@@ -1,12 +1,17 @@
 // include the basic windows header files and the Direct3D header files
+#include <iostream>
+#include <string>
+#include <filesystem>
+#include <fstream>
 #include <windows.h>
 #include <windowsx.h>
 #include <d3d11.h>
 #include "DirectXMath.h"
-#include <math.h>
+#include <d3dcompiler.h>
 
 // include the Direct3D Library file
 #pragma comment (lib, "d3d11.lib")
+#pragma comment (lib, "d3dcompiler.lib")
 
 // define the screen resolution
 #define SCREEN_WIDTH  800
@@ -17,18 +22,23 @@ IDXGISwapChain* swapchain;             // the pointer to the swap chain interfac
 ID3D11Device* dev;                     // the pointer to our Direct3D device interface
 ID3D11DeviceContext* devcon;           // the pointer to our Direct3D device context
 ID3D11RenderTargetView* backbuffer;    // the pointer to our back buffer
-ID3D11Buffer* pVBuffer;                            // the vertex buffer
-static float timer;
+ID3D11InputLayout* pLayout;            // the pointer to the input layout
+ID3D11VertexShader* pVS;               // the pointer to the vertex shader
+ID3D11PixelShader* pPS;                // the pointer to the pixel shader
+ID3D11Buffer* pVBuffer;                // the pointer to the vertex buffer
 
+// a struct to define a single vertex
+struct VERTEX { FLOAT X, Y, Z; float* Color; };
 
-struct VERTEX { FLOAT X, Y, Z; float* Color; };    // a struct to define a vertex
+using std::filesystem::current_path;
 
 
 // function prototypes
 void InitD3D(HWND hWnd);    // sets up and initializes Direct3D
 void RenderFrame(void);     // renders a single frame
 void CleanD3D(void);        // closes Direct3D and releases memory
-void InitGraphics(void);    // Initialize vertex variables and initialize vertex buffers
+void InitGraphics(void);    // creates the shape to render
+void InitPipeline(void);    // loads and prepares the shaders
 
 // the WindowProc function prototype
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -40,8 +50,11 @@ int WINAPI WinMain(HINSTANCE hInstance,
     LPSTR lpCmdLine,
     int nCmdShow)
 {
+
     HWND hWnd;
     WNDCLASSEX wc;
+    const auto mota = current_path();
+
 
     ZeroMemory(&wc, sizeof(WNDCLASSEX));
 
@@ -50,7 +63,6 @@ int WINAPI WinMain(HINSTANCE hInstance,
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    // wc.hbrBackground = (HBRUSH)COLOR_WINDOW;    // no longer needed
     wc.lpszClassName = "WindowClass";
 
     RegisterClassEx(&wc);
@@ -79,11 +91,9 @@ int WINAPI WinMain(HINSTANCE hInstance,
     // enter the main loop:
 
     MSG msg;
-    timer = 0.0f;
 
     while (TRUE)
     {
-        timer += 0.001f;
         if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&msg);
@@ -129,15 +139,15 @@ void InitD3D(HWND hWnd)
     ZeroMemory(&scd, sizeof(DXGI_SWAP_CHAIN_DESC));
 
     // fill the swap chain description struct
-    scd.BufferCount = 1;                                    // one back buffer
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;     // use 32-bit color
-    scd.BufferDesc.Width = SCREEN_WIDTH;                    // set the back buffer width
-    scd.BufferDesc.Height = SCREEN_HEIGHT;                  // set the back buffer height
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;      // how swap chain is to be used
-    scd.OutputWindow = hWnd;                                // the window to be used
-    scd.SampleDesc.Count = 4;                               // how many multisamples
-    scd.Windowed = TRUE;                                    // windowed/full-screen mode
-    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;     // allow full-screen switching
+    scd.BufferCount = 1;                                   // one back buffer
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;    // use 32-bit color
+    scd.BufferDesc.Width = SCREEN_WIDTH;                   // set the back buffer width
+    scd.BufferDesc.Height = SCREEN_HEIGHT;                 // set the back buffer height
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;     // how swap chain is to be used
+    scd.OutputWindow = hWnd;                               // the window to be used
+    scd.SampleDesc.Count = 4;                              // how many multisamples
+    scd.Windowed = TRUE;                                   // windowed/full-screen mode
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;    // allow full-screen switching
 
     // create a device, device context and swap chain using the information in the scd struct
     D3D11CreateDeviceAndSwapChain(NULL,
@@ -176,19 +186,29 @@ void InitD3D(HWND hWnd)
     viewport.Height = SCREEN_HEIGHT;
 
     devcon->RSSetViewports(1, &viewport);
+
+    InitPipeline();
+    InitGraphics();
 }
 
 
 // this is the function used to render a single frame
 void RenderFrame(void)
 {
-
-    float blue = sin(timer);
+    float color1[4] = { 0.0f, 0.2f, 0.4f, 1.0f };
     // clear the back buffer to a deep blue
-    float color[4] = { 0.0f, 0.0f, blue, 1.0f };
-    devcon->ClearRenderTargetView(backbuffer, color);
+    devcon->ClearRenderTargetView(backbuffer, color1);
 
-    // do 3D rendering on the back buffer here
+    // select which vertex buffer to display
+    UINT stride = sizeof(VERTEX);
+    UINT offset = 0;
+    devcon->IASetVertexBuffers(0, 1, &pVBuffer, &stride, &offset);
+
+    // select which primtive type we are using
+    devcon->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // draw the vertex buffer to the back buffer
+    devcon->Draw(3, 0);
 
     // switch the back buffer and the front buffer
     swapchain->Present(0, 0);
@@ -201,23 +221,29 @@ void CleanD3D(void)
     swapchain->SetFullscreenState(FALSE, NULL);    // switch to windowed mode
 
     // close and release all existing COM objects
+    pLayout->Release();
+    pVS->Release();
+    pPS->Release();
+    pVBuffer->Release();
     swapchain->Release();
     backbuffer->Release();
     dev->Release();
     devcon->Release();
 }
 
+
+// this is the function that creates the shape to render
 void InitGraphics()
 {
+    float color2[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    float color3[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    float color4[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
     // create a triangle using the VERTEX struct
-    float color1[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
-    float color2[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
-    float color3[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
     VERTEX OurVertices[] =
     {
-        {0.0f, 0.5f, 0.0f, color1},
-        {0.45f, -0.5, 0.0f, color2},
-        {-0.45f, -0.5f, 0.0f, color3}
+        {0.0f, 0.5f, 0.0f, color2},
+        {0.45f, -0.5, 0.0f, color3},
+        {-0.45f, -0.5f, 0.0f, color4}
     };
 
 
@@ -240,3 +266,30 @@ void InitGraphics()
     devcon->Unmap(pVBuffer, NULL);                                      // unmap the buffer
 }
 
+
+// this function loads and prepares the shaders
+void InitPipeline()
+{
+    // load and compile the two shaders
+    ID3D10Blob* VS, * PS;
+    HRESULT f = D3DCompileFromFile(L"C:\\Users\\21266\\Documents\\Tutorial Scripts\\GraphicsProj2\\shaders.hlsl", 0, 0, "VShader", "vs_5_0", 0, 0, &VS, 0);
+    HRESULT m = D3DCompileFromFile(L"C:\\Users\\21266\\Documents\\Tutorial Scripts\\GraphicsProj2\\shaders.hlsl", 0, 0, "PShader", "ps_5_0", 0, 0, &PS, 0);
+
+    // encapsulate both shaders into shader objects
+    dev->CreateVertexShader(VS->GetBufferPointer(), VS->GetBufferSize(), NULL, &pVS);
+    dev->CreatePixelShader(PS->GetBufferPointer(), PS->GetBufferSize(), NULL, &pPS);
+
+    // set the shader objects
+    devcon->VSSetShader(pVS, 0, 0);
+    devcon->PSSetShader(pPS, 0, 0);
+
+    // create the input layout object
+    D3D11_INPUT_ELEMENT_DESC ied[] =
+    {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+    };
+
+    dev->CreateInputLayout(ied, 2, VS->GetBufferPointer(), VS->GetBufferSize(), &pLayout);
+    devcon->IASetInputLayout(pLayout);
+}
